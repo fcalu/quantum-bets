@@ -4,13 +4,19 @@ from datetime import datetime, timedelta
 from dateutil import parser
 import pytz
 import os
+import time
 
 app = Flask(__name__)
 
 BASE_URL = "https://sportia-api.onrender.com/api/v1"
 LOCAL_TZ = pytz.timezone("UTC")
 
-# ================= SEGURIDAD API =================
+# ================= CACHE =================
+
+CACHE = {"data": [], "timestamp": 0}
+CACHE_TTL = 300  # 5 minutos
+
+# ================= API SEGURA =================
 
 def safe_json(r):
     try:
@@ -85,7 +91,7 @@ def extract_soccer(pred):
 
             picks.append({
                 "sport": "SOCCER",
-                "match": pred["match"],
+                "match": pred.get("match", ""),
                 "market": f"{m['type']} {m['bet_decision']} {m['line']}",
                 "prob": round(prob * 100, 1),
                 "edge": round(edge * 100, 1),
@@ -97,21 +103,28 @@ def extract_soccer(pred):
 
 @app.route("/")
 def home():
-    all_picks = []
+    now = time.time()
 
-    # NBA
-    for m in get_upcoming_matches("nba"):
-        if is_today_or_tomorrow(m["start_time"]):
-            pred = get_prediction(m, "basketball")
-            all_picks.extend(extract_nba(pred, m))
+    if CACHE["data"] and now - CACHE["timestamp"] < CACHE_TTL:
+        top = CACHE["data"]
+    else:
+        all_picks = []
 
-    # Soccer
-    for m in get_upcoming_matches("soccer"):
-        if is_today_or_tomorrow(m["start_time"]):
-            pred = get_prediction(m, "soccer")
-            all_picks.extend(extract_soccer(pred))
+        for m in get_upcoming_matches("nba"):
+            if is_today_or_tomorrow(m["start_time"]):
+                pred = get_prediction(m, "basketball")
+                all_picks.extend(extract_nba(pred, m))
 
-    top = sorted(all_picks, key=lambda x: x["score"], reverse=True)[:7]
+        for m in get_upcoming_matches("soccer"):
+            if is_today_or_tomorrow(m["start_time"]):
+                pred = get_prediction(m, "soccer")
+                all_picks.extend(extract_soccer(pred))
+
+        top = sorted(all_picks, key=lambda x: x["score"], reverse=True)[:7]
+
+        if top:
+            CACHE["data"] = top
+            CACHE["timestamp"] = now
 
     html = """
     <html>
@@ -134,7 +147,7 @@ def home():
             </div>
         {% endfor %}
     {% else %}
-        <div class="card">No value bets found right now.</div>
+        <div class="card">API temporalmente no disponible. Mostrando últimos datos válidos.</div>
     {% endif %}
     </body>
     </html>
