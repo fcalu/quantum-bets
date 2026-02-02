@@ -3,15 +3,30 @@ import requests
 from datetime import datetime, timedelta
 from dateutil import parser
 import pytz
+import os
 
 app = Flask(__name__)
 
 BASE_URL = "https://sportia-api.onrender.com/api/v1"
 LOCAL_TZ = pytz.timezone("UTC")
 
+# ================= SEGURIDAD API =================
+
+def safe_json(r):
+    try:
+        return r.json()
+    except Exception:
+        print("⚠️ API returned non-JSON:", r.status_code)
+        return []
+
 def get_upcoming_matches(sport):
-    r = requests.get(f"{BASE_URL}/matches/upcoming", params={"sport": sport})
-    return r.json()
+    try:
+        r = requests.get(f"{BASE_URL}/matches/upcoming", params={"sport": sport}, timeout=10)
+        r.raise_for_status()
+        return safe_json(r)
+    except Exception as e:
+        print("❌ Error fetching matches:", e)
+        return []
 
 def get_prediction(match, sport):
     payload = {
@@ -21,20 +36,29 @@ def get_prediction(match, sport):
         "home_team": match["home"],
         "away_team": match["away"]
     }
-    r = requests.post(f"{BASE_URL}/ai/predict", json=payload)
-    return r.json()
+    try:
+        r = requests.post(f"{BASE_URL}/ai/predict", json=payload, timeout=15)
+        r.raise_for_status()
+        return safe_json(r)
+    except Exception as e:
+        print("❌ Prediction error:", e)
+        return {}
+
+# ================= FECHA =================
 
 def is_today_or_tomorrow(start_time):
     match_time = parser.isoparse(start_time).astimezone(LOCAL_TZ)
     now = datetime.now(LOCAL_TZ)
     return match_time.date() in [now.date(), (now + timedelta(days=1)).date()]
 
+# ================= NBA MODEL =================
+
 STAT_STABILITY = {"Rebounds": 1.25, "Assists": 1.1, "Points": 1.0}
 
 def extract_nba(pred, match):
     picks = []
     for prop in pred.get("player_props", []):
-        if prop["bet_tier"] == "VALUE BET" and prop["confidence"] >= 60:
+        if prop.get("bet_tier") == "VALUE BET" and prop.get("confidence", 0) >= 60:
             score = prop["edge_over"] * prop["model_prob_over"] * STAT_STABILITY.get(prop["type"], 1)
             picks.append({
                 "sport": "NBA",
@@ -46,12 +70,19 @@ def extract_nba(pred, match):
             })
     return picks
 
+# ================= SOCCER MODEL =================
+
 def extract_soccer(pred):
     picks = []
     for m in pred.get("player_props", []):
-        if m["bet_tier"] == "VALUE BET":
-            prob = m["model_prob_under"] if m["bet_decision"] == "UNDER" else m["model_prob_over"]
-            edge = m["edge_under"] if m["bet_decision"] == "UNDER" else m["edge_over"]
+        if m.get("bet_tier") == "VALUE BET":
+            if m["bet_decision"] == "UNDER":
+                prob = m["model_prob_under"]
+                edge = m["edge_under"]
+            else:
+                prob = m["model_prob_over"]
+                edge = m["edge_over"]
+
             picks.append({
                 "sport": "SOCCER",
                 "match": pred["match"],
@@ -62,15 +93,19 @@ def extract_soccer(pred):
             })
     return picks
 
+# ================= WEB ROUTE =================
+
 @app.route("/")
 def home():
     all_picks = []
 
+    # NBA
     for m in get_upcoming_matches("nba"):
         if is_today_or_tomorrow(m["start_time"]):
             pred = get_prediction(m, "basketball")
             all_picks.extend(extract_nba(pred, m))
 
+    # Soccer
     for m in get_upcoming_matches("soccer"):
         if is_today_or_tomorrow(m["start_time"]):
             pred = get_prediction(m, "soccer")
@@ -90,17 +125,24 @@ def home():
     </head>
     <body>
     <h1>🔥 TOP AI PICKS MULTISPORT</h1>
-    {% for p in picks %}
-        <div class="card">
-            <b>[{{p.sport}}]</b> {{p.match}}<br>
-            {{p.market}}<br>
-            Prob: {{p.prob}}% | Edge: +{{p.edge}}%
-        </div>
-    {% endfor %}
+    {% if picks %}
+        {% for p in picks %}
+            <div class="card">
+                <b>[{{p.sport}}]</b> {{p.match}}<br>
+                {{p.market}}<br>
+                Prob: {{p.prob}}% | Edge: +{{p.edge}}%
+            </div>
+        {% endfor %}
+    {% else %}
+        <div class="card">No value bets found right now.</div>
+    {% endif %}
     </body>
     </html>
     """
     return render_template_string(html, picks=top)
 
+# ================= RUN =================
+
 if __name__ == "__main__":
-    app.run()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
