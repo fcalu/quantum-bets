@@ -5,33 +5,30 @@ from dateutil import parser
 import pytz
 import os
 import time
+import threading
 
 app = Flask(__name__)
 
 BASE_URL = "https://sportia-api.onrender.com/api/v1"
 LOCAL_TZ = pytz.timezone("UTC")
 
-# ================= CACHE =================
-
-CACHE = {"data": [], "timestamp": 0}
-CACHE_TTL = 300  # 5 minutos
+LATEST_PICKS = []
 
 # ================= API SEGURA =================
 
 def safe_json(r):
     try:
         return r.json()
-    except Exception:
-        print("⚠️ API returned non-JSON:", r.status_code)
+    except:
         return []
 
 def get_upcoming_matches(sport):
     try:
-        r = requests.get(f"{BASE_URL}/matches/upcoming", params={"sport": sport}, timeout=10)
+        r = requests.get(f"{BASE_URL}/matches/upcoming", params={"sport": sport}, timeout=8)
         r.raise_for_status()
         return safe_json(r)
     except Exception as e:
-        print("❌ Error fetching matches:", e)
+        print("❌ Match fetch error:", e)
         return []
 
 def get_prediction(match, sport):
@@ -43,7 +40,7 @@ def get_prediction(match, sport):
         "away_team": match["away"]
     }
     try:
-        r = requests.post(f"{BASE_URL}/ai/predict", json=payload, timeout=15)
+        r = requests.post(f"{BASE_URL}/ai/predict", json=payload, timeout=10)
         r.raise_for_status()
         return safe_json(r)
     except Exception as e:
@@ -99,15 +96,13 @@ def extract_soccer(pred):
             })
     return picks
 
-# ================= WEB ROUTE =================
+# ================= BACKGROUND WORKER =================
 
-@app.route("/")
-def home():
-    now = time.time()
+def update_picks():
+    global LATEST_PICKS
 
-    if CACHE["data"] and now - CACHE["timestamp"] < CACHE_TTL:
-        top = CACHE["data"]
-    else:
+    while True:
+        print("🔄 Updating picks...")
         all_picks = []
 
         for m in get_upcoming_matches("nba"):
@@ -120,12 +115,18 @@ def home():
                 pred = get_prediction(m, "soccer")
                 all_picks.extend(extract_soccer(pred))
 
-        top = sorted(all_picks, key=lambda x: x["score"], reverse=True)[:7]
+        LATEST_PICKS = sorted(all_picks, key=lambda x: x["score"], reverse=True)[:7]
+        print("✅ Picks updated:", len(LATEST_PICKS))
 
-        if top:
-            CACHE["data"] = top
-            CACHE["timestamp"] = now
+        time.sleep(300)
 
+# iniciar thread
+threading.Thread(target=update_picks, daemon=True).start()
+
+# ================= WEB ROUTE =================
+
+@app.route("/")
+def home():
     html = """
     <html>
     <head>
@@ -147,12 +148,12 @@ def home():
             </div>
         {% endfor %}
     {% else %}
-        <div class="card">API temporalmente no disponible. Mostrando últimos datos válidos.</div>
+        <div class="card">Cargando datos de IA...</div>
     {% endif %}
     </body>
     </html>
     """
-    return render_template_string(html, picks=top)
+    return render_template_string(html, picks=LATEST_PICKS)
 
 # ================= RUN =================
 
