@@ -24,7 +24,7 @@ def get_matches(sport):
         r.raise_for_status()
         return [m for m in r.json() if is_today_or_tomorrow(m["start_time"])]
     except Exception as e:
-        print("Match fetch error:", e)
+        print("❌ Match fetch error:", e)
         return []
 
 # ================= FETCH PREDICTION =================
@@ -67,7 +67,7 @@ def home():
             <div class="card">
                 {{m.home}} vs {{m.away}}
                 <br>
-                <a href="/predict/basketball/{{m.event_id}}/{{m.home}}/{{m.away}}">Ver Predicción JSON</a>
+                <a href="/predict/basketball/{{m.event_id}}">Ver Predicción JSON</a>
             </div>
         {% endfor %}
 
@@ -76,7 +76,7 @@ def home():
             <div class="card">
                 {{m.home}} vs {{m.away}}
                 <br>
-                <a href="/predict/soccer/{{m.event_id}}/{{m.home}}/{{m.away}}">Ver Predicción JSON</a>
+                <a href="/predict/soccer/{{m.event_id}}">Ver Predicción JSON</a>
             </div>
         {% endfor %}
     </body>
@@ -85,14 +85,16 @@ def home():
 
 # ================= PREDICTION ROUTE =================
 
-@app.route("/predict/<sport>/<event_id>/<home>/<away>")
-def predict(sport, event_id, home, away):
-    match = {
-        "league": "basketball/nba" if sport == "basketball" else "soccer/mex.1",
-        "event_id": event_id,
-        "home": home,
-        "away": away
-    }
+@app.route("/predict/<sport>/<event_id>")
+def predict(sport, event_id):
+
+    sport_key = "nba" if sport == "basketball" else "soccer"
+    matches = get_matches(sport_key)
+
+    match = next((m for m in matches if m["event_id"] == event_id), None)
+
+    if not match:
+        return {"error": "Match not found"}, 404
 
     try:
         pred = get_prediction(match, sport)
