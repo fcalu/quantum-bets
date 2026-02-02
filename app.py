@@ -43,13 +43,14 @@ def get_prediction(match, sport):
         print("❌ Prediction error:", e)
         return {}
 
-# ================= FECHA HOY =================
+# ================= FILTRO PRÓXIMAS 24H =================
 
-def is_today(start_time):
+def is_soon(start_time):
     match_time = parser.isoparse(start_time).astimezone(LOCAL_TZ)
-    return match_time.date() == datetime.now(LOCAL_TZ).date()
+    now = datetime.now(LOCAL_TZ)
+    return 0 <= (match_time - now).total_seconds() <= 86400
 
-# ================= RUTA HOME =================
+# ================= HOME =================
 
 @app.route("/")
 def home():
@@ -57,18 +58,20 @@ def home():
 
     for sport in ["nba", "soccer"]:
         for m in get_upcoming_matches(sport):
-            if is_today(m["start_time"]):
+            if is_soon(m["start_time"]):
                 matches.append({
                     "sport": "basketball" if sport == "nba" else "soccer",
                     "event_id": m["event_id"],
+                    "league": m["league"],
                     "home": m["home"],
-                    "away": m["away"]
+                    "away": m["away"],
+                    "time": parser.isoparse(m["start_time"]).strftime("%H:%M UTC")
                 })
 
     html = """
     <html>
     <head>
-    <title>QuantumBetLab - Selecciona Partido</title>
+    <title>QuantumBetLab - Partidos Próximos</title>
     <style>
     body { font-family: Arial; background:#0a0f1e; color:white; padding:30px;}
     h1 { color:#00ffcc; }
@@ -77,18 +80,19 @@ def home():
     </style>
     </head>
     <body>
-    <h1>📅 Partidos de Hoy</h1>
+    <h1>📅 Partidos Próximas 24h</h1>
     {% if matches %}
         {% for m in matches %}
             <div class="card">
                 {{m.home}} vs {{m.away}}<br>
-                <a href="/predict/{{m.sport}}/{{m.event_id}}/{{m.home}}/{{m.away}}">
+                {{m.time}}<br>
+                <a href="/predict/{{m.sport}}/{{m.event_id}}/{{m.league}}/{{m.home}}/{{m.away}}">
                     ▶ Ver predicción IA
                 </a>
             </div>
         {% endfor %}
     {% else %}
-        <div class="card">No hay partidos hoy.</div>
+        <div class="card">No hay partidos próximos.</div>
     {% endif %}
     </body>
     </html>
@@ -97,11 +101,11 @@ def home():
 
 # ================= PREDICCIÓN =================
 
-@app.route("/predict/<sport>/<event_id>/<home>/<away>")
-def predict(sport, event_id, home, away):
+@app.route("/predict/<sport>/<event_id>/<league>/<home>/<away>")
+def predict(sport, event_id, league, home, away):
 
     match = {
-        "league": "",
+        "league": league,
         "event_id": event_id,
         "home": home,
         "away": away
