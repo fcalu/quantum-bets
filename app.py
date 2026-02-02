@@ -1,18 +1,14 @@
 from flask import Flask, render_template_string
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from dateutil import parser
 import pytz
 import os
-import time
-import threading
 
 app = Flask(__name__)
 
 BASE_URL = "https://sportia-api.onrender.com/api/v1"
 LOCAL_TZ = pytz.timezone("UTC")
-
-LATEST_PICKS = []
 
 # ================= API SEGURA =================
 
@@ -40,120 +36,111 @@ def get_prediction(match, sport):
         "away_team": match["away"]
     }
     try:
-        r = requests.post(f"{BASE_URL}/ai/predict", json=payload, timeout=10)
+        r = requests.post(f"{BASE_URL}/ai/predict", json=payload, timeout=12)
         r.raise_for_status()
         return safe_json(r)
     except Exception as e:
         print("❌ Prediction error:", e)
         return {}
 
-# ================= FECHA =================
+# ================= FECHA HOY =================
 
-def is_today_or_tomorrow(start_time):
+def is_today(start_time):
     match_time = parser.isoparse(start_time).astimezone(LOCAL_TZ)
-    now = datetime.now(LOCAL_TZ)
-    return match_time.date() in [now.date(), (now + timedelta(days=1)).date()]
+    return match_time.date() == datetime.now(LOCAL_TZ).date()
 
-# ================= NBA MODEL =================
-
-STAT_STABILITY = {"Rebounds": 1.25, "Assists": 1.1, "Points": 1.0}
-
-def extract_nba(pred, match):
-    picks = []
-    for prop in pred.get("player_props", []):
-        if prop.get("bet_tier") == "VALUE BET" and prop.get("confidence", 0) >= 60:
-            score = prop["edge_over"] * prop["model_prob_over"] * STAT_STABILITY.get(prop["type"], 1)
-            picks.append({
-                "sport": "NBA",
-                "match": f"{match['home']} vs {match['away']}",
-                "market": f"{prop['name']} OVER {prop['line']} {prop['type']}",
-                "prob": round(prop["model_prob_over"] * 100, 1),
-                "edge": round(prop["edge_over"] * 100, 1),
-                "score": score
-            })
-    return picks
-
-# ================= SOCCER MODEL =================
-
-def extract_soccer(pred):
-    picks = []
-    for m in pred.get("player_props", []):
-        if m.get("bet_tier") == "VALUE BET":
-            if m["bet_decision"] == "UNDER":
-                prob = m["model_prob_under"]
-                edge = m["edge_under"]
-            else:
-                prob = m["model_prob_over"]
-                edge = m["edge_over"]
-
-            picks.append({
-                "sport": "SOCCER",
-                "match": pred.get("match", ""),
-                "market": f"{m['type']} {m['bet_decision']} {m['line']}",
-                "prob": round(prob * 100, 1),
-                "edge": round(edge * 100, 1),
-                "score": prob * edge
-            })
-    return picks
-
-# ================= BACKGROUND WORKER =================
-
-def update_picks():
-    global LATEST_PICKS
-
-    while True:
-        print("🔄 Updating picks...")
-        all_picks = []
-
-        for m in get_upcoming_matches("nba"):
-            if is_today_or_tomorrow(m["start_time"]):
-                pred = get_prediction(m, "basketball")
-                all_picks.extend(extract_nba(pred, m))
-
-        for m in get_upcoming_matches("soccer"):
-            if is_today_or_tomorrow(m["start_time"]):
-                pred = get_prediction(m, "soccer")
-                all_picks.extend(extract_soccer(pred))
-
-        LATEST_PICKS = sorted(all_picks, key=lambda x: x["score"], reverse=True)[:7]
-        print("✅ Picks updated:", len(LATEST_PICKS))
-
-        time.sleep(300)
-
-# iniciar thread
-threading.Thread(target=update_picks, daemon=True).start()
-
-# ================= WEB ROUTE =================
+# ================= RUTA HOME =================
 
 @app.route("/")
 def home():
+    matches = []
+
+    for sport in ["nba", "soccer"]:
+        for m in get_upcoming_matches(sport):
+            if is_today(m["start_time"]):
+                matches.append({
+                    "sport": "basketball" if sport == "nba" else "soccer",
+                    "event_id": m["event_id"],
+                    "home": m["home"],
+                    "away": m["away"]
+                })
+
     html = """
     <html>
     <head>
-    <title>QuantumBetLab AI Picks</title>
+    <title>QuantumBetLab - Selecciona Partido</title>
     <style>
     body { font-family: Arial; background:#0a0f1e; color:white; padding:30px;}
     h1 { color:#00ffcc; }
     .card { background:#11182e; padding:15px; margin:15px 0; border-radius:10px; }
+    a { color:#00ffcc; text-decoration:none; font-weight:bold; }
     </style>
     </head>
     <body>
-    <h1>🔥 TOP AI PICKS MULTISPORT</h1>
-    {% if picks %}
-        {% for p in picks %}
+    <h1>📅 Partidos de Hoy</h1>
+    {% if matches %}
+        {% for m in matches %}
             <div class="card">
-                <b>[{{p.sport}}]</b> {{p.match}}<br>
-                {{p.market}}<br>
-                Prob: {{p.prob}}% | Edge: +{{p.edge}}%
+                {{m.home}} vs {{m.away}}<br>
+                <a href="/predict/{{m.sport}}/{{m.event_id}}/{{m.home}}/{{m.away}}">
+                    ▶ Ver predicción IA
+                </a>
             </div>
         {% endfor %}
     {% else %}
-        <div class="card">Cargando datos de IA...</div>
+        <div class="card">No hay partidos hoy.</div>
     {% endif %}
     </body>
     </html>
     """
-    return render_template_string(html, picks=LATEST_PICKS)
+    return render_template_string(html, matches=matches)
+
+# ================= PREDICCIÓN =================
+
+@app.route("/predict/<sport>/<event_id>/<home>/<away>")
+def predict(sport, event_id, home, away):
+
+    match = {
+        "league": "",
+        "event_id": event_id,
+        "home": home,
+        "away": away
+    }
+
+    pred = get_prediction(match, sport)
+
+    html = """
+    <html>
+    <head>
+    <title>Predicción IA</title>
+    <style>
+    body { font-family: Arial; background:#0a0f1e; color:white; padding:30px;}
+    h1 { color:#00ffcc; }
+    .card { background:#11182e; padding:15px; margin:15px 0; border-radius:10px; }
+    a { color:#00ffcc; }
+    </style>
+    </head>
+    <body>
+    <h1>🤖 Predicción IA</h1>
+    <h2>{{home}} vs {{away}}</h2>
+
+    {% if pred.player_props %}
+        {% for p in pred.player_props %}
+            <div class="card">
+                {{p.name}} {{p.bet_decision}} {{p.line}} {{p.type}}<br>
+                Prob Modelo: {{ (p.model_prob_over * 100)|round(1) }}%<br>
+                Edge: +{{ (p.edge_over * 100)|round(1) }}%
+            </div>
+        {% endfor %}
+    {% else %}
+        <div class="card">No hay props disponibles.</div>
+    {% endif %}
+
+    <br><a href="/">⬅ Volver</a>
+    </body>
+    </html>
+    """
+    return render_template_string(html, pred=pred, home=home, away=away)
 
 # ================= RUN =================
 
